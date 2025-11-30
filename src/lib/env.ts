@@ -3,6 +3,11 @@ const requiredEnv = {
   supabaseAnonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
 };
 
+const optionalEnv = {
+  googleMapsApiKey:
+    process.env.GOOGLE_MAPS_API_KEY ?? process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY,
+};
+
 function assertEnv<T extends Record<string, string | undefined>>(vars: T): {
   [K in keyof T]: string;
 } {
@@ -19,4 +24,7 @@ function assertEnv<T extends Record<string, string | undefined>>(vars: T): {
   return vars as { [K in keyof T]: string };
 }
 
-export const env = assertEnv(requiredEnv);
+export const env = {
+  ...assertEnv(requiredEnv),
+  ...optionalEnv,
+};

@@ -26,10 +26,25 @@ export function ProvidersFilterPanel({
   const categories = selected.categories ?? [];
   const funding = selected.funding ?? [];
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [desktopOpen, setDesktopOpen] = useState(true);
+  const toggleLabel = mobileOpen ? "Hide" : "Show";
+
+  const handleToggleFilters = () => {
+    if (!desktopOpen) {
+      setDesktopOpen(true);
+      return;
+    }
+    setMobileOpen((prev) => !prev);
+  };
 
   return (
     <div className={cn("w-full", className)}>
-      <div className="flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm md:hidden">
+      <div
+        className={cn(
+          "flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm",
+          desktopOpen ? "md:hidden" : "md:flex"
+        )}
+      >
         <div>
           <p className="text-sm font-semibold text-slate-900">Filters</p>
           <p className="text-xs text-slate-500">Tap to refine your results</p>
@@ -37,11 +52,11 @@ export function ProvidersFilterPanel({
         <button
           type="button"
           aria-expanded={mobileOpen}
-          onClick={() => setMobileOpen((prev) => !prev)}
+          onClick={handleToggleFilters}
           className="inline-flex items-center gap-2 rounded-full border border-slate-200 px-3 py-1 text-sm font-semibold text-slate-700"
         >
           <Filter className="h-4 w-4" />
-          {mobileOpen ? "Hide" : "Show"}
+          {toggleLabel}
         </button>
       </div>
       <form
@@ -49,7 +64,8 @@ export function ProvidersFilterPanel({
         method="get"
         className={cn(
           "mt-4 space-y-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-lg shadow-slate-100 md:mt-0",
-          mobileOpen ? "block" : "hidden md:block"
+          mobileOpen ? "block" : "hidden",
+          desktopOpen ? "md:block" : "md:hidden"
         )}
       >
         <div className="flex flex-col gap-3 sm:flex-row">
@@ -70,6 +86,18 @@ export function ProvidersFilterPanel({
             onClick={() => setMobileOpen(false)}
           >
             Apply
+          </button>
+          <button
+            type="button"
+            className="hidden items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 md:inline-flex"
+            onClick={() => {
+              setDesktopOpen(false);
+              setMobileOpen(false);
+            }}
+            aria-label="Close filters"
+          >
+            <X className="h-4 w-4" />
+            Close
           </button>
           <button
             type="button"

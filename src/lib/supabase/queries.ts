@@ -171,15 +171,36 @@ export async function fetchProviders(
 
     if (error) throw error;
 
-    return {
-      providers: (data ?? []).map((item) =>
-        mapProviderSummary(item as ProviderRecord)
-      ),
-      total: count ?? 0,
-      page,
-      limit,
-    };
+    const providers = (data ?? []).map((item) =>
+      mapProviderSummary(item as ProviderRecord)
+    );
+
+    if (!providers.length && env.googleMapsApiKey) {
+      const googleProviders = await fetchGoogleProviders(input, page, limit);
+      if (googleProviders.length) {
+        return {
+          providers: googleProviders,
+          total: googleProviders.length,
+          page,
+          limit,
+        };
+      }
+    }
+
+    return { providers, total: count ?? providers.length, page, limit };
   } catch (err) {
+    if (env.googleMapsApiKey) {
+      const googleProviders = await fetchGoogleProviders(input, page, limit);
+      if (googleProviders.length) {
+        return {
+          providers: googleProviders,
+          total: googleProviders.length,
+          page,
+          limit,
+        };
+      }
+    }
+
     const fallback = filterMockProviderSummaries({
       query: input.query,
       states: input.states,
@@ -194,6 +215,13 @@ export async function fetchProviders(
 export async function fetchProviderDetail(
   slug: string
 ): Promise<ProviderDetail | null> {
+  if (slug.startsWith("google-") && env.googleMapsApiKey) {
+    const googleProvider = await fetchGoogleProviderDetail(slug);
+    if (googleProvider) {
+      return googleProvider;
+    }
+  }
+
   if (isMockSupabase) {
     const provider = getMockProvider(slug);
     return provider
@@ -243,6 +271,13 @@ export async function fetchProviderDetail(
         })) ?? [],
     };
   } catch (err) {
+    if (env.googleMapsApiKey) {
+      const googleProvider = await fetchGoogleProviderDetail(slug);
+      if (googleProvider) {
+        return googleProvider;
+      }
+    }
+
     const provider = getMockProvider(slug);
     console.warn("[Supabase] fetchProviderDetail failed, using mock data", err);
     return provider ? { ...mapMockProviderSummary(provider), ...provider } : null;
@@ -431,5 +466,200 @@ function mapMockProviderSummary(provider: MockProvider): ProviderSummary {
     services: provider.services,
     state: provider.state,
     suburb: provider.suburb,
+  };
+}
+
+const GOOGLE_BASE_URL = "https://maps.googleapis.com/maps/api/place";
+
+async function fetchGoogleProviders(
+  input: ProviderSearchInput,
+  page: number,
+  limit: number
+): Promise<ProviderSummary[]> {
+  if (!env.googleMapsApiKey) return [];
+
+  const query = buildGoogleQuery(input);
+  if (!query) return [];
+
+  const params = new URLSearchParams({
+    query,
+    region: "au",
+    key: env.googleMapsApiKey,
+  });
+
+  try {
+    const response = await fetch(`${GOOGLE_BASE_URL}/textsearch/json?${params.toString()}`);
+    if (!response.ok) throw new Error(`Google Places text search failed: ${response.status}`);
+    const payload = (await response.json()) as {
+      results?: {
+        place_id?: string;
+        name?: string;
+        formatted_address?: string;
+        types?: string[];
+      }[];
+    };
+
+    const mapped = (payload.results ?? [])
+      .filter((place) => Boolean(place.place_id && place.name))
+      .map(mapGooglePlaceSummary);
+
+    const from = (page - 1) * limit;
+    const to = from + limit;
+    return mapped.slice(from, to);
+  } catch (error) {
+    console.warn("[Google] fetchGoogleProviders failed", error);
+    return [];
+  }
+}
+
+async function fetchGoogleProviderDetail(slug: string): Promise<ProviderDetail | null> {
+  if (!env.googleMapsApiKey) return null;
+  const placeId = slug.replace(/^google-/, "");
+
+  const params = new URLSearchParams({
+    place_id: placeId,
+    key: env.googleMapsApiKey,
+    fields:
+      "name,formatted_address,formatted_phone_number,international_phone_number,website,address_components,types",
+  });
+
+  try {
+    const response = await fetch(`${GOOGLE_BASE_URL}/details/json?${params.toString()}`);
+    if (!response.ok) throw new Error(`Google Places detail failed: ${response.status}`);
+    const payload = (await response.json()) as {
+      result?: {
+        name?: string;
+        formatted_address?: string;
+        formatted_phone_number?: string;
+        international_phone_number?: string;
+        website?: string;
+        types?: string[];
+        address_components?: { long_name?: string; short_name?: string; types?: string[] }[];
+      };
+    };
+
+    const result = payload.result;
+    if (!result?.name) return null;
+
+    const parsedAddress = parseAddressComponents(result.address_components) ??
+      parseFormattedAddress(result.formatted_address);
+    const services = formatPlaceTypes(result.types);
+
+    return {
+      id: slug,
+      slug,
+      name: result.name,
+      headline: result.formatted_address ?? "Location on Google Maps",
+      summary: result.formatted_address ?? "Imported from Google Maps",
+      tags: [],
+      services,
+      state: parsedAddress?.state,
+      suburb: parsedAddress?.suburb,
+      website: result.website,
+      contactEmail: null,
+      contactPhone:
+        result.formatted_phone_number ?? result.international_phone_number ?? null,
+      funding: [],
+      locations: [
+        {
+          suburb: parsedAddress?.suburb,
+          state: parsedAddress?.state,
+          label: parsedAddress?.suburb ? `${parsedAddress.suburb} location` : "Primary location",
+        },
+      ],
+      servicesDetail: services.map((service) => ({ name: service, summary: undefined })),
+    };
+  } catch (error) {
+    console.warn("[Google] fetchGoogleProviderDetail failed", error);
+    return null;
+  }
+}
+
+function buildGoogleQuery(input: ProviderSearchInput): string {
+  const parts = ["disability services"];
+  if (input.query?.trim()) {
+    parts.push(input.query.trim());
+  }
+  if (input.states?.length) {
+    parts.push(input.states[0]);
+  }
+  return parts.filter(Boolean).join(" in ");
+}
+
+function mapGooglePlaceSummary(place: {
+  place_id?: string;
+  name?: string;
+  formatted_address?: string;
+  types?: string[];
+}): ProviderSummary {
+  const parsed = parseFormattedAddress(place.formatted_address);
+  return {
+    id: place.place_id ?? "",
+    slug: `google-${place.place_id}`,
+    name: place.name ?? "Google place",
+    headline: place.formatted_address,
+    summary: place.formatted_address,
+    tags: [],
+    services: formatPlaceTypes(place.types),
+    state: parsed?.state,
+    suburb: parsed?.suburb,
+  };
+}
+
+function formatPlaceTypes(types?: string[]): string[] {
+  if (!types?.length) return [];
+  const ignored = new Set([
+    "point_of_interest",
+    "establishment",
+    "premise",
+    "health",
+    "store",
+  ]);
+  return uniqueStrings(
+    types
+      .filter((type) => !ignored.has(type))
+      .map((type) =>
+        type
+          .split("_")
+          .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+          .join(" ")
+      )
+  );
+}
+
+function parseAddressComponents(
+  components?: { long_name?: string; short_name?: string; types?: string[] }[]
+): { state?: string; suburb?: string } | undefined {
+  if (!components) return undefined;
+  const state =
+    components.find((component) =>
+      component.types?.includes("administrative_area_level_1")
+    )?.short_name ?? undefined;
+
+  const suburb =
+    components.find((component) => component.types?.includes("locality"))?.short_name ??
+    components.find((component) => component.types?.includes("sublocality_level_1"))
+      ?.short_name ??
+    undefined;
+
+  if (!state && !suburb) return undefined;
+  return { state, suburb };
+}
+
+function parseFormattedAddress(address?: string | null): { state?: string; suburb?: string } | undefined {
+  if (!address) return undefined;
+  const stateMatch = address.match(
+    /\b(ACT|NSW|NT|QLD|SA|TAS|VIC|WA)\b/i
+  );
+  const parts = address.split(",");
+  const suburbWithState = parts.length > 1 ? parts[parts.length - 2].trim() : parts[0].trim();
+  const suburb = suburbWithState
+    .replace(/\b(ACT|NSW|NT|QLD|SA|TAS|VIC|WA)\b/i, "")
+    .replace(/\d{4}/g, "")
+    .trim();
+
+  return {
+    state: stateMatch?.[1]?.toUpperCase(),
+    suburb: suburb || parts[0]?.trim(),
   };
 }
